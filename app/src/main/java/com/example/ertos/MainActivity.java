@@ -243,45 +243,4 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
     /**
      * Kalman Filter implementation for sensor noise reduction
      */
-    private class KalmanFilter {
-        private float q; // Process noise covariance
-        private float r; // Measurement noise covariance
-        private float x; // Estimated value
-        private float p; // Estimation error covariance
-        private float k; // Kalman gain
-
-        public KalmanFilter(float q, float r, float initialValue, float initialP) {
-            this.q = q;
-            this.r = r;
-            this.x = initialValue;
-            this.p = initialP;
-        }
-
-        /**
-         * Prediction step
-         */
-        public void predict() {
-            p = p + q; // Update estimation error covariance
-        }
-
-        /**
-         * Update step with new measurement
-         * @param measurement New sensor reading
-         */
-        public void update(float measurement) {
-            // Calculate Kalman gain
-            k = p / (p + r);
-            // Update estimate
-            x = x + k * (measurement - x);
-            // Update estimation error
-            p = (1 - k) * p;
-        }
-
-        /**
-         * @return Current filtered estimate
-         */
-        public double getEstimate() {
-            return x;
-        }
-    }
 }

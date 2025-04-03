@@ -6,6 +6,7 @@ public class KalmanFilter {
     private double Q;
     private double R;
 
+
     public KalmanFilter(double processNoise, double measurementNoise, double initialEstimate, double initialUncertainty) {
         this.Q = processNoise;
         this.R = measurementNoise;
