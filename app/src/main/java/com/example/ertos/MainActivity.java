@@ -22,23 +22,45 @@ import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity implements SensorEventListener {
 
+    // UI elements to display sensor data and predictions
     private TextView xText, yText, zText, predictionText;
+
+    // Sensor management objects
     private Sensor accelerometer;
     private SensorManager sensorManager;
 
-    // TFLite model
+    // Kalman Filter instances for each axis (X, Y, Z)
+    private KalmanFilter kalmanFilterX;
+    private KalmanFilter kalmanFilterY;
+    private KalmanFilter kalmanFilterZ;
+
+    // TensorFlow Lite model interpreter
     private Interpreter tflite;
-    private float[] meanValues = {0f,  2f,  0f};
-    private float[] stdValues = {0f, 2f, 0f};
+
+    // Normalization parameters (mean and standard deviation for each axis)
+    private float[] meanValues = {0f,  2f,  0f};  // Adjust these based on your training data
+    private float[] stdValues = {0f, 2f, 0f};     // Adjust these based on your training data
+
+    // Activity label mapping (must match training labels)
     private String[] activityLabels = {"Sitting", "Walking", "Running"};
 
+    // Handler for periodic predictions
     private Handler predictionHandler = new Handler();
-    private float lastX, lastY, lastZ;
+
+    // Timing and filtered values storage
+    private long lastUpdateTime = 0;
+    private float filteredX, filteredY, filteredZ;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Initialize Kalman filters with specified parameters:
+        // q (process noise), r (measurement noise), initial value, initial covariance
+        kalmanFilterX = new KalmanFilter(0.2f, 0.7f, 0.0f, 0.7f);
+        kalmanFilterY = new KalmanFilter(0.2f, 0.7f, 0.0f, 0.7f);
+        kalmanFilterZ = new KalmanFilter(0.2f, 0.7f, 0.0f, 0.7f);
 
         initializeViews();
         initializeSensor();
@@ -46,19 +68,26 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         startPredictionCycle();
     }
 
+    /**
+     * Initialize UI components
+     */
     private void initializeViews() {
-        xText = findViewById(R.id.xText);
-        yText = findViewById(R.id.yText);
-        zText = findViewById(R.id.zText);
-        predictionText = findViewById(R.id.predictionText);
-        predictionText.setText("Activity: Unknown");
+        xText = findViewById(R.id.xText);          // TextView for X-axis value
+        yText = findViewById(R.id.yText);          // TextView for Y-axis value
+        zText = findViewById(R.id.zText);          // TextView for Z-axis value
+        predictionText = findViewById(R.id.predictionText);  // TextView for activity prediction
+        predictionText.setText("Activity: Unknown");  // Default prediction text
     }
 
+    /**
+     * Initialize accelerometer sensor
+     */
     private void initializeSensor() {
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (sensorManager != null) {
             accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             if (accelerometer != null) {
+                // Register listener with normal sampling rate
                 sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_NORMAL);
             } else {
                 Toast.makeText(this, "No accelerometer sensor found", Toast.LENGTH_SHORT).show();
@@ -66,6 +95,9 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         }
     }
 
+    /**
+     * Load TensorFlow Lite model from assets
+     */
     private void loadModel() {
         try {
             tflite = new Interpreter(loadModelFile());
@@ -75,6 +107,9 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         }
     }
 
+    /**
+     * Helper method to load TFLite model file from assets
+     */
     private MappedByteBuffer loadModelFile() throws IOException {
         AssetFileDescriptor fileDescriptor = getAssets().openFd("activity_model.tflite");
         FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
@@ -84,42 +119,73 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
     }
 
+    /**
+     * Start periodic prediction cycle (every 2 seconds)
+     */
     private void startPredictionCycle() {
         predictionHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                predictActivity(lastX, lastY, lastZ);
-                predictionHandler.postDelayed(this, 2000); // 10 seconds
+                // Predict activity using filtered values
+                predictActivity(filteredX, filteredY, filteredZ);
+                // Schedule next prediction
+                predictionHandler.postDelayed(this, 2000); // 2 seconds interval
             }
-        }, 2000); // Initial delay of 10 seconds
+        }, 2000); // Initial delay of 2 seconds
     }
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            lastX = event.values[0];
-            lastY = event.values[1];
-            lastZ = event.values[2];
+        long currentTime = System.currentTimeMillis();
+        // Throttle sensor updates to ~100Hz (10ms interval)
+        if (currentTime - lastUpdateTime > 10) {
+            lastUpdateTime = currentTime;
 
-            // Update UI with raw values
-            xText.setText(String.format(Locale.getDefault(), "X: %.2f", lastX));
-            yText.setText(String.format(Locale.getDefault(), "Y: %.2f", lastY));
-            zText.setText(String.format(Locale.getDefault(), "Z: %.2f", lastZ));
+            // Raw accelerometer values
+            float x = event.values[0];
+            float y = event.values[1];
+            float z = event.values[2];
+
+            // Apply Kalman filter to each axis
+            kalmanFilterX.predict();
+            kalmanFilterX.update(x);
+            kalmanFilterY.predict();
+            kalmanFilterY.update(y);
+            kalmanFilterZ.predict();
+            kalmanFilterZ.update(z);
+
+            // Store filtered values
+            filteredX = (float) kalmanFilterX.getEstimate();
+            filteredY = (float) kalmanFilterY.getEstimate();
+            filteredZ = (float) kalmanFilterZ.getEstimate();
+
+            // Update UI with filtered values
+            xText.setText(String.format(Locale.getDefault(), "X: %.2f", filteredX));
+            yText.setText(String.format(Locale.getDefault(), "Y: %.2f", filteredY));
+            zText.setText(String.format(Locale.getDefault(), "Z: %.2f", filteredZ));
         }
     }
 
+    /**
+     * Predict activity using the TensorFlow Lite model
+     * @param x Filtered X-axis value
+     * @param y Filtered Y-axis value
+     * @param z Filtered Z-axis value
+     */
     private void predictActivity(float x, float y, float z) {
-        // Normalize the input
+        // Normalize input using precomputed mean and std
         float[] input = new float[3];
         input[0] = (x - meanValues[0]) / stdValues[0];
         input[1] = (y - meanValues[1]) / stdValues[1];
         input[2] = (z - meanValues[2]) / stdValues[2];
 
-        // Run inference
+        // Output array for model predictions
         float[][] output = new float[1][3];
+
+        // Run inference
         tflite.run(input, output);
 
-        // Get predicted class
+        // Get predicted class (index with highest probability)
         int predictedClass = argmax(output[0]);
         String activity = activityLabels[predictedClass];
 
@@ -127,6 +193,11 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         predictionText.setText("Activity: " + activity);
     }
 
+    /**
+     * Helper method to find index of maximum value in array
+     * @param array Input array
+     * @return Index of maximum value
+     */
     private int argmax(float[] array) {
         int maxIndex = 0;
         float maxValue = array[0];
@@ -141,27 +212,76 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // Not needed
+        // Not used for accelerometer
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        // Unregister sensor listener to save battery
         sensorManager.unregisterListener(this);
+        // Remove pending prediction callbacks
         predictionHandler.removeCallbacksAndMessages(null);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // Re-register sensor listener when activity resumes
         sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_NORMAL);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // Clean up TensorFlow Lite interpreter
         if (tflite != null) {
             tflite.close();
+        }
+    }
+
+    /**
+     * Kalman Filter implementation for sensor noise reduction
+     */
+    private class KalmanFilter {
+        private float q; // Process noise covariance
+        private float r; // Measurement noise covariance
+        private float x; // Estimated value
+        private float p; // Estimation error covariance
+        private float k; // Kalman gain
+
+        public KalmanFilter(float q, float r, float initialValue, float initialP) {
+            this.q = q;
+            this.r = r;
+            this.x = initialValue;
+            this.p = initialP;
+        }
+
+        /**
+         * Prediction step
+         */
+        public void predict() {
+            p = p + q; // Update estimation error covariance
+        }
+
+        /**
+         * Update step with new measurement
+         * @param measurement New sensor reading
+         */
+        public void update(float measurement) {
+            // Calculate Kalman gain
+            k = p / (p + r);
+            // Update estimate
+            x = x + k * (measurement - x);
+            // Update estimation error
+            p = (1 - k) * p;
+        }
+
+        /**
+         * @return Current filtered estimate
+         */
+        public double getEstimate() {
+            return x;
         }
     }
 }
